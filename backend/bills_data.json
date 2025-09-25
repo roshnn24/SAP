@@ -1,0 +1,44 @@
+[
+  {
+    "id": 1,
+    "user_id": "default_user",
+    "dup_key": "techsolutionsinc_INV-1288_01-09-2025_1897.27",
+    "vendor": "Tech Solutions Inc",
+    "invoice_number": "INV-1288",
+    "item": "Travel Expenses",
+    "date": "01-09-2025",
+    "amount": 1897.27,
+    "short_description": "software",
+    "ocr_data": {
+      "invoice_number": "INV-1288",
+      "vendor": "Tech Solutions Inc",
+      "item": "Travel Expenses",
+      "date": "01-09-2025",
+      "amount": "1897.27",
+      "short_description": "software"
+    },
+    "created_at": "2025-09-20T14:03:06.268779",
+    "updated_at": "2025-09-20T14:03:06.268793"
+  },
+  {
+    "id": 2,
+    "user_id": "default_user",
+    "dup_key": "silverlineelectronics_5552_22-05-2025_1646.00",
+    "vendor": "SILVERLINE ELECTRONICS",
+    "invoice_number": "5552",
+    "item": "RPI PI CAMERA MODULE V2",
+    "date": "22-05-2025",
+    "amount": 1646.0,
+    "short_description": "ELECTRONICS",
+    "ocr_data": {
+      "invoice_number": "5552",
+      "vendor": "SILVERLINE ELECTRONICS",
+      "item": "RPI PI CAMERA MODULE V2",
+      "date": "22-05-2025",
+      "amount": "1646.00",
+      "short_description": "ELECTRONICS"
+    },
+    "created_at": "2025-09-20T18:02:10.140613",
+    "updated_at": "2025-09-20T18:02:10.140866"
+  }
+]
