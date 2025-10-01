@@ -4,291 +4,194 @@ import ollama
 import re
 import json
 import os
-import tempfile
 from werkzeug.utils import secure_filename
 from simple_database import db_instance
-import re
-import json
+
+# --- LangChain & RAG Imports ---
+from langchain_community.document_loaders import PyPDFLoader
+from langchain.text_splitter import RecursiveCharacterTextSplitter
+from langchain_community.embeddings import OllamaEmbeddings
+from langchain_community.vectorstores import FAISS
+
+app = Flask(__name__)
+CORS(app)
+
+# --- Configuration ---
+UPLOAD_FOLDER = 'uploads'
+ALLOWED_EXTENSIONS = {'png', 'jpg', 'jpeg', 'pdf'}
+_BILLS_JSON_PATH = os.path.join(os.path.dirname(__file__), 'bills_data.json')
+
+app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
+os.makedirs(UPLOAD_FOLDER, exist_ok=True)
+
+# --- RAG Pipeline (Initialized on Startup) ---
+_POLICY_VECTORSTORE = None
+
+def initialize_rag_pipeline():
+    """Loads PDF, creates embeddings, and sets up the vector store."""
+    global _POLICY_VECTORSTORE
+    try:
+        print("--- Initializing RAG Policy Agent ---")
+        
+        # --- THIS IS THE CORRECTED PART ---
+        # Build an absolute path to the PDF relative to this script's location
+        script_dir = os.path.dirname(__file__)
+        pdf_path = os.path.join(script_dir, "Policies.pdf")
+        # --- END OF CORRECTION ---
+
+        if not os.path.exists(pdf_path):
+            print(f"ERROR: 'Policies.pdf' not found at the expected path: {pdf_path}")
+            print("Please ensure the PDF file is in the same directory as app.py.")
+            return
+
+        print(f"Loading PDF from: {pdf_path}")
+        loader = PyPDFLoader(pdf_path)
+        docs = loader.load()
+        
+        text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
+        splits = text_splitter.split_documents(docs)
+        
+        embeddings = OllamaEmbeddings(model="nomic-embed-text")
+        _POLICY_VECTORSTORE = FAISS.from_documents(documents=splits, embedding=embeddings)
+        print("--- RAG Policy Agent Ready ---")
+    except Exception as e:
+        print(f"FATAL: Could not initialize RAG pipeline: {e}")
+
+# ... (The rest of your app.py file is unchanged) ...
+
+def check_invoice_compliance(invoice: dict):
+    if not _POLICY_VECTORSTORE:
+        return "ERROR: Policy agent is not initialized. Check server logs."
+    invoice_text = (
+        f"Invoice Number: {invoice.get('invoice_number', 'N/A')}. "
+        f"Vendor: {invoice.get('vendor', 'N/A')}. "
+        f"Item: {invoice.get('item', 'N/A')}. "
+        f"Date: {invoice.get('date', 'N/A')}. "
+        f"Amount: {invoice.get('amount', 'N/A')}. "
+        f"Category: {invoice.get('short_description', 'N/A')}."
+    )
+    retriever = _POLICY_VECTORSTORE.as_retriever(search_kwargs={"k": 5})
+    relevant_docs = retriever.invoke(invoice_text)
+    context = "\n\n".join([doc.page_content for doc in relevant_docs])
+    prompt_template = f"""
+    You are a strict expense approval auditor. Your ONLY task is to determine if an expense claim passes or is declined based *strictly* on the company policy context provided below.
+    - Provide a one-sentence answer starting with "PASS:" or "DECLINED:".
+    - You MUST cite the specific rule from the context that justifies your decision.
+    - If the context does not contain a specific rule, state: "UNCLEAR: The policy does not contain a specific rule for this expense."
+
+    **Company Policy Context:**
+    {context}
+    **Expense Claim to Verify:**
+    {invoice_text}
+    **Your auditor decision:**
+    """
+    response = ollama.chat(
+        model='llama3.1:8b',
+        messages=[
+            {'role': 'system', 'content': 'You are a strict financial auditor.'},
+            {'role': 'user', 'content': prompt_template}
+        ]
+    )
+    return response['message']['content'].strip()
 
 def safe_json_parse(raw_output):
-    # Find the first JSON object in the text
-    match = re.search(r'\{.*\}', raw_output, re.DOTALL)
+    match = re.search(r'\{[\s\S]*\}', raw_output)
     if match:
         try:
             return json.loads(match.group(0))
-        except json.JSONDecodeError as e:
-            print("❌ JSON decode failed:", e)
-            return None
+        except Exception: pass
     return None
-
-app = Flask(__name__)
-CORS(app)  # Enable CORS for React frontend
-
-# Configure upload settings
-UPLOAD_FOLDER = 'uploads'
-ALLOWED_EXTENSIONS = {'png', 'jpg', 'jpeg', 'pdf'}
-app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
-app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16MB max file size
-
-# Create upload directory if it doesn't exist
-os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 
 def allowed_file(filename):
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
 
+def _load_bills_json():
+    try:
+        if not os.path.exists(_BILLS_JSON_PATH): return []
+        with open(_BILLS_JSON_PATH, 'r', encoding='utf-8') as f: return json.load(f)
+    except Exception: return []
+
+def _save_bill_to_json(extracted_data):
+    bills = _load_bills_json()
+    bills.append(extracted_data)
+    with open(_BILLS_JSON_PATH, 'w', encoding='utf-8') as f:
+        json.dump(bills, f, indent=2)
 
 def process_invoice_with_ocr(image_path):
-    """
-    Process invoice image using Ollama OCR model
-    """
     try:
-        # Check if Ollama is available and model exists
-        try:
-            models = ollama.list()
-            
-            # Try different model names
-            model_name = 'llama3.2-vision:11b'
-            
-        except Exception as e:
-            return {
-                "success": False,
-                "error": f"Ollama not available: {str(e)}",
-                "data": None
-            }
-
-
-        # Step 1: Ask SLM to analyze image and extract structured fields
-        messages = [
-    {
-        "role": "system",
-        "content": "You are an assistant that extracts structured fields from invoices. Analyze image correctly, for example the content near the text of invoice number is the invoice number but there may be other numbers that look like the same."
-    },
-    {
-        "role": "user",
-        "content": """Return only the following fields in JSON format:
-        {
-          "invoice_number": "...",
-          "vendor": "...",
-          "item": "max 4 words (make the item name concise if it's too long)",
-          "date": "DD-MM-YYYY",
-          "amount": "...",
-          "short_description": "concise 2–5 word expense category (e.g., 'office supplies', 'travel expense')"
-        }
-        Make sure all fields are filled in, even if you need to infer from context. 
-        Make sure you give with starting bracket and ending bracket like a typical JSON.
-        Also dont give any additional text.
-        Give only JSON no additional text .
-        """,
-        "images": [image_path]
-    }
-]
-
-
-        response = ollama.chat(
-            model=model_name,
-            messages=messages
-        )
-
+        model_name = 'qwen2.5vl:3b'
+        base_messages = [{
+            "role": "system", "content": "You are an assistant that extracts structured fields from invoices."
+        }, {
+            "role": "user",
+            "content": (
+                "Return only the following fields in JSON format:\n"
+                "{\n"
+                "  \"invoice_number\": \"...\",\n"
+                "  \"vendor\": \"...\",\n"
+                "  \"item\": \"max 4 words\",\n"
+                "  \"date\": \"DD-MM-YYYY\",\n"
+                "  \"amount\": \"...\",\n"
+                "  \"short_description\": \"concise 2–5 word expense category\"\n"
+                "}\n"
+                "Respond with JSON ONLY. No prose."
+            ), "images": [image_path]
+        }]
+        response = ollama.chat(model=model_name, messages=base_messages)
         raw_output = response['message']['content']
-        print(raw_output)
-
-        # Step 2: Parse JSON safely
-        try:
-            data = safe_json_parse(raw_output)
-        except Exception as e:
-            # If JSON parsing fails, return error
-            return {
-                "success": False,
-                "error": f"Failed to parse OCR output: {str(e)}",
-                "data": None
-            }
-
-
-        # Step 3: Post-processing / normalization
-
-        # Clean invoice number (keep alphanumerics and dashes)
-        if "invoice_number" in data:
-            match = re.search(r'[A-Za-z0-9-]+', data["invoice_number"])
-            if match:
-                data["invoice_number"] = match.group()
-
-        # Normalize date to DD-MM-YYYY
-        if "date" in data:
-            match = re.search(r'(\d{1,2})[/-](\d{1,2})[/-](\d{2,4})', data["date"])
-            if match:
-                day, month, year = match.groups()
-                if len(year) == 2:  # Fix short year like "25"
-                    year = "20" + year
-                data["date"] = f"{int(day):02d}-{int(month):02d}-{year}"
-
-        # Clean amount (digits + decimal)
-        if "amount" in data:
-            match = re.search(r'[\d,.]+', data["amount"])
-            if match:
-                data["amount"] = match.group().replace(",", "")
-            else:
-                data["amount"] = "0.00"  # Default to 0 if no amount found
-
-        # Vendor cleanup (strip extra whitespace/newlines)
-        if "vendor" in data:
-            data["vendor"] = data["vendor"].strip()
-
-        # Item cleanup (shorten to clean text line)
-        if "item" in data:
-            data["item"] = re.sub(r'\s+', ' ', data["item"]).strip()
-
-        # Ensure all required fields have default values
+        data = safe_json_parse(raw_output)
+        if data is None:
+            return {"success": False, "error": "OCR failed to extract JSON.", "raw_output": raw_output}
         required_fields = {
-            "invoice_number": "N/A",
-            "vendor": "Unknown Vendor", 
-            "item": "Unknown Item",
-            "date": "01-01-2024",
-            "amount": "0.00",
-            "short_description": "Unknown Category"
+            "invoice_number": "N/A", "vendor": "Unknown", "item": "N/A",
+            "date": "N/A", "amount": "0.00", "short_description": "General"
         }
-        
-        for field, default_value in required_fields.items():
-            if field not in data or not data[field] or data[field].strip() == "":
-                data[field] = default_value
-
-        return {
-            "success": True,
-            "data": data,
-            "raw_output": raw_output
-        }
-
+        for field, default in required_fields.items():
+            if field not in data or not data[field]: data[field] = default
+        return {"success": True, "data": data, "raw_output": raw_output}
     except Exception as e:
-        return {
-            "success": False,
-            "error": str(e),
-            "data": None
-        }
+        return {"success": False, "error": str(e), "data": None}
 
 @app.route('/api/process-invoice', methods=['POST'])
-def process_invoice():
-    """
-    API endpoint to process uploaded invoice images
-    """
-    try:
-        # Check if file is present in request
-        if 'file' not in request.files:
-            return jsonify({
-                "success": False,
-                "error": "No file uploaded"
-            }), 400
+def process_invoice_endpoint():
+    if 'file' not in request.files:
+        return jsonify({"success": False, "error": "No file uploaded"}), 400
+    file = request.files['file']
+    if not file or not allowed_file(file.filename):
+        return jsonify({"success": False, "error": "Invalid file"}), 400
+    filename = secure_filename(file.filename)
+    file_path = os.path.join(app.config['UPLOAD_FOLDER'], filename)
+    file.save(file_path)
+    result = process_invoice_with_ocr(file_path) 
+    os.remove(file_path)
+    return jsonify(result) if result["success"] else (jsonify(result), 500)
 
-        file = request.files['file']
-        
-        # Check if file is selected
-        if file.filename == '':
-            return jsonify({
-                "success": False,
-                "error": "No file selected"
-            }), 400
+@app.route('/api/policy-check', methods=['POST'])
+def policy_check_endpoint():
+    invoice_data = request.get_json()
+    if not invoice_data:
+        return jsonify({"success": False, "error": "No invoice data provided"}), 400
+    decision = check_invoice_compliance(invoice_data)
+    return jsonify({"success": True, "decision": decision})
 
-        # Check if file type is allowed
-        if not allowed_file(file.filename):
-            return jsonify({
-                "success": False,
-                "error": "File type not allowed. Please upload PNG, JPG, JPEG, or PDF files."
-            }), 400
+@app.route('/api/save-bill', methods=['POST'])
+def save_bill_endpoint():
+    invoice_data = request.get_json()
+    if not invoice_data:
+        return jsonify({"success": False, "error": "No invoice data provided"}), 400
+    user_id = 'default_user'
+    duplicate_check = db_instance.check_duplicates(invoice_data, user_id)
+    if duplicate_check["is_duplicate"]:
+        return jsonify({"success": False, "error": "This bill is a duplicate and cannot be saved."})
+    db_instance.save_bill(invoice_data, user_id)
+    _save_bill_to_json(invoice_data)
+    return jsonify({"success": True, "message": "Bill saved successfully."})
 
-        # Save uploaded file temporarily
-        filename = secure_filename(file.filename)
-        file_path = os.path.join(app.config['UPLOAD_FOLDER'], filename)
-        file.save(file_path)
-
-        try:
-            # Process the invoice with OCR
-            result = process_invoice_with_ocr(file_path)
-            
-            # Clean up temporary file
-            os.remove(file_path)
-            
-            if result["success"]:
-                # Check for duplicates
-                # Check for duplicates
-                user_id = request.form.get('user_id', 'default_user')
-                duplicate_check = db_instance.check_duplicates(result["data"], user_id)
-
-                # Add duplicate info
-                result["duplicate_check"] = duplicate_check
-
-                if not duplicate_check["is_duplicate"]:
-                    bill_id = db_instance.save_bill(result["data"], user_id)
-                    result["bill_id"] = bill_id
-                    result["saved_to_database"] = True
-                else:
-                    result["saved_to_database"] = False
-
-                
-                return jsonify(result)
-            else:
-                return jsonify(result), 500
-                
-        except Exception as e:
-            # Clean up temporary file in case of error
-            if os.path.exists(file_path):
-                os.remove(file_path)
-            return jsonify({
-                "success": False,
-                "error": f"Processing failed: {str(e)}"
-            }), 500
-
-    except Exception as e:
-        return jsonify({
-            "success": False,
-            "error": f"Server error: {str(e)}"
-        }), 500
-
-@app.route('/api/health', methods=['GET'])
-def health_check():
-    """
-    Health check endpoint
-    """
-    return jsonify({
-        "status": "healthy",
-        "message": "OCR API is running"
-    })
-
-@app.route('/api/bills', methods=['GET'])
-def get_user_bills():
-    """
-    Get all bills for a user
-    """
-    try:
-        user_id = request.args.get('user_id', 'default_user')
-        bills = db_instance.get_user_bills(user_id)
-        
-        return jsonify({
-            "success": True,
-            "bills": bills,
-            "count": len(bills)
-        })
-    except Exception as e:
-        return jsonify({
-            "success": False,
-            "error": str(e)
-        }), 500
-
-@app.route('/api/bills/all', methods=['GET'])
-def get_all_bills():
-    """
-    Get all bills (for admin purposes)
-    """
-    try:
-        bills = db_instance.get_all_bills()
-        
-        return jsonify({
-            "success": True,
-            "bills": bills,
-            "count": len(bills)
-        })
-    except Exception as e:
-        return jsonify({
-            "success": False,
-            "error": str(e)
-        }), 500
+@app.route('/api/bills/json', methods=['GET'])
+def get_bills_json():
+    bills = _load_bills_json()
+    return jsonify({"success": True, "bills": bills, "count": len(bills)})
 
 if __name__ == '__main__':
-    app.run(debug=True, host='0.0.0.0', port=5000)
+    initialize_rag_pipeline()
+    app.run(debug=True, host='0.0.0.0', port=5001)

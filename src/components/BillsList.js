@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { 
   Receipt, 
   Search, 
@@ -9,123 +9,65 @@ import {
   XCircle, 
   Clock,
   Calendar,
-  DollarSign,
-  Building
+  DollarSign
 } from 'lucide-react';
 
 const BillsList = () => {
   const [searchTerm, setSearchTerm] = useState('');
-  const [statusFilter, setStatusFilter] = useState('all');
+  const [statusFilter, setStatusFilter] = useState('all'); // Note: status is now hardcoded as 'accepted'
   const [selectedBill, setSelectedBill] = useState(null);
+  const [bills, setBills] = useState([]);
 
-  const bills = [
-    {
-      id: 1,
-      invoiceNumber: 'INV-2024-001',
-      vendor: 'ABC Corporation',
-      amount: 1234.56,
-      date: '2024-01-15',
-      dueDate: '2024-02-15',
-      category: 'Office Supplies',
-      status: 'accepted',
-      uploadedDate: '2024-01-15',
-      processedDate: '2024-01-15',
-      confidence: 95,
-      description: 'Office supplies and equipment purchase'
-    },
-    {
-      id: 2,
-      invoiceNumber: 'INV-2024-002',
-      vendor: 'Tech Solutions Inc',
-      amount: 2500.00,
-      date: '2024-01-12',
-      dueDate: '2024-02-12',
-      category: 'Technology',
-      status: 'pending',
-      uploadedDate: '2024-01-12',
-      processedDate: null,
-      confidence: null,
-      description: 'Software licenses and IT equipment'
-    },
-    {
-      id: 3,
-      invoiceNumber: 'INV-2024-003',
-      vendor: 'Travel Agency Ltd',
-      amount: 850.75,
-      date: '2024-01-10',
-      dueDate: '2024-02-10',
-      category: 'Travel',
-      status: 'rejected',
-      uploadedDate: '2024-01-10',
-      processedDate: '2024-01-10',
-      confidence: 78,
-      description: 'Business travel expenses'
-    },
-    {
-      id: 4,
-      invoiceNumber: 'INV-2024-004',
-      vendor: 'Marketing Pro',
-      amount: 1500.00,
-      date: '2024-01-08',
-      dueDate: '2024-02-08',
-      category: 'Marketing',
-      status: 'accepted',
-      uploadedDate: '2024-01-08',
-      processedDate: '2024-01-08',
-      confidence: 92,
-      description: 'Digital marketing campaign'
-    },
-    {
-      id: 5,
-      invoiceNumber: 'INV-2024-005',
-      vendor: 'Office Depot',
-      amount: 450.25,
-      date: '2024-01-05',
-      dueDate: '2024-02-05',
-      category: 'Office Supplies',
-      status: 'accepted',
-      uploadedDate: '2024-01-05',
-      processedDate: '2024-01-05',
-      confidence: 98,
-      description: 'Stationery and office materials'
-    }
-  ];
+  useEffect(() => {
+    const fetchBills = async () => {
+      try {
+        const res = await fetch('http://localhost:5001/api/bills/json');
+        const data = await res.json();
+        if (data.success && Array.isArray(data.bills)) {
+          // Add default values to prevent rendering errors
+          const billsWithDefaults = data.bills.map((b, idx) => ({
+            id: `${b.invoice_number}-${b.vendor}-${idx}`, // Create a stable key for React
+            amount: b.amount ?? "0.00",
+            date: b.date ?? "N/A",
+            invoice_number: b.invoice_number ?? "N/A",
+            item: b.item ?? "No item description",
+            short_description: b.short_description ?? "Uncategorized",
+            vendor: b.vendor ?? "Unknown Vendor",
+          }));
+          setBills(billsWithDefaults);
+        } else {
+          setBills([]);
+        }
+      } catch (e) {
+        console.error("Failed to fetch bills:", e);
+        setBills([]);
+      }
+    };
+
+    fetchBills();
+    window.addEventListener('billUploaded', fetchBills);
+    return () => {
+      window.removeEventListener('billUploaded', fetchBills);
+    };
+  }, []);
 
   const filteredBills = bills.filter(bill => {
-    const matchesSearch = bill.vendor.toLowerCase().includes(searchTerm.toLowerCase()) ||
-                         bill.invoiceNumber.toLowerCase().includes(searchTerm.toLowerCase()) ||
-                         bill.description.toLowerCase().includes(searchTerm.toLowerCase());
-    const matchesStatus = statusFilter === 'all' || bill.status === statusFilter;
+    const matchesSearch = 
+      bill.vendor.toLowerCase().includes(searchTerm.toLowerCase()) ||
+      bill.invoice_number.toLowerCase().includes(searchTerm.toLowerCase()) ||
+      bill.item.toLowerCase().includes(searchTerm.toLowerCase());
+    
+    // Status filter is kept for UI but all items are 'accepted' by default now
+    const matchesStatus = statusFilter === 'all' || statusFilter === 'accepted';
     return matchesSearch && matchesStatus;
   });
 
-  const getStatusIcon = (status) => {
-    switch (status) {
-      case 'accepted':
-        return <CheckCircle className="w-5 h-5 text-dark-success" />;
-      case 'rejected':
-        return <XCircle className="w-5 h-5 text-dark-error" />;
-      case 'pending':
-        return <Clock className="w-5 h-5 text-dark-warning" />;
-      default:
-        return <Clock className="w-5 h-5 text-dark-muted" />;
-    }
-  };
+  // Since status is no longer in our data, we simplify these helpers
+  const getStatusIcon = (status) => <CheckCircle className="w-5 h-5 text-dark-success" />;
+  const getStatusColor = (status) => 'text-dark-success bg-green-900 bg-opacity-20';
 
-  const getStatusColor = (status) => {
-    switch (status) {
-      case 'accepted':
-        return 'text-dark-success bg-green-900 bg-opacity-20';
-      case 'rejected':
-        return 'text-dark-error bg-red-900 bg-opacity-20';
-      case 'pending':
-        return 'text-dark-warning bg-yellow-900 bg-opacity-20';
-      default:
-        return 'text-dark-muted bg-gray-900 bg-opacity-20';
-    }
-  };
-
-  const formatCurrency = (amount) => {
+  const formatCurrency = (amountStr) => {
+    const amount = parseFloat(String(amountStr).replace(/,/g, '')) || 0;
     return new Intl.NumberFormat('en-US', {
       style: 'currency',
       currency: 'USD'
@@ -133,7 +75,16 @@ const BillsList = () => {
   };
 
   const formatDate = (dateString) => {
-    return new Date(dateString).toLocaleDateString('en-US', {
+    if (!dateString || dateString === "N/A") return 'Invalid Date';
+    // Assuming DD-MM-YYYY format from backend
+    const parts = dateString.split('-');
+    if (parts.length !== 3) return 'Invalid Date';
+    const [day, month, year] = parts;
+    // Reassemble to a format the Date constructor understands (YYYY-MM-DD)
+    const isoDate = new Date(`${year}-${month}-${day}`);
+    if (isNaN(isoDate)) return 'Invalid Date';
+
+    return isoDate.toLocaleDateString('en-US', {
       year: 'numeric',
       month: 'short',
       day: 'numeric'
@@ -147,7 +98,6 @@ const BillsList = () => {
         <p className="text-dark-muted">View and manage your uploaded bills</p>
       </div>
 
-      {/* Search and Filter */}
       <div className="card mb-6">
         <div className="flex flex-col md:flex-row gap-4">
           <div className="flex-1">
@@ -155,7 +105,7 @@ const BillsList = () => {
               <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 text-dark-muted w-5 h-5" />
               <input
                 type="text"
-                placeholder="Search bills by vendor, invoice number, or description..."
+                placeholder="Search by vendor, invoice #, or item..."
                 value={searchTerm}
                 onChange={(e) => setSearchTerm(e.target.value)}
                 className="input-field w-full pl-10"
@@ -172,8 +122,6 @@ const BillsList = () => {
               >
                 <option value="all">All Status</option>
                 <option value="accepted">Accepted</option>
-                <option value="pending">Pending</option>
-                <option value="rejected">Rejected</option>
               </select>
             </div>
           </div>
@@ -181,7 +129,6 @@ const BillsList = () => {
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        {/* Bills List */}
         <div className="lg:col-span-2">
           <div className="space-y-4">
             {filteredBills.map(bill => (
@@ -196,15 +143,15 @@ const BillsList = () => {
                       <Receipt className="w-6 h-6 text-dark-accent" />
                     </div>
                     <div>
-                      <h3 className="text-lg font-semibold text-dark-text">{bill.invoiceNumber}</h3>
+                      <h3 className="text-lg font-semibold text-dark-text">{bill.invoice_number}</h3>
                       <p className="text-sm text-dark-muted">{bill.vendor}</p>
                     </div>
                   </div>
                   <div className="flex items-center space-x-3">
-                    <span className={`px-3 py-1 rounded-full text-sm font-medium ${getStatusColor(bill.status)}`}>
-                      {bill.status.toUpperCase()}
+                    <span className={`px-3 py-1 rounded-full text-sm font-medium ${getStatusColor()}`}>
+                      ACCEPTED
                     </span>
-                    {getStatusIcon(bill.status)}
+                    {getStatusIcon()}
                   </div>
                 </div>
 
@@ -219,21 +166,12 @@ const BillsList = () => {
                   </div>
                 </div>
 
-                <p className="text-dark-muted text-sm mb-4">{bill.description}</p>
+                <p className="text-dark-muted text-sm mb-4">{bill.item}</p>
 
                 <div className="flex justify-between items-center">
                   <span className="text-sm text-dark-muted">
-                    Uploaded: {formatDate(bill.uploadedDate)}
+                    Uploaded: {formatDate(bill.date)}
                   </span>
-                  <div className="flex space-x-2">
-                    <button className="btn-secondary flex items-center space-x-1 px-3 py-1">
-                      <Eye className="w-4 h-4" />
-                      <span className="text-sm">View</span>
-                    </button>
-                    <button className="btn-secondary flex items-center space-x-1 px-3 py-1">
-                      <Download className="w-4 h-4" />
-                    </button>
-                  </div>
                 </div>
               </div>
             ))}
@@ -248,7 +186,6 @@ const BillsList = () => {
           )}
         </div>
 
-        {/* Bill Details Sidebar */}
         <div className="lg:col-span-1">
           {selectedBill ? (
             <div className="card sticky top-6">
@@ -256,11 +193,11 @@ const BillsList = () => {
               
               <div className="space-y-4">
                 <div className="flex items-center space-x-3">
-                  {getStatusIcon(selectedBill.status)}
+                  {getStatusIcon()}
                   <div>
-                    <p className="text-dark-text font-medium">{selectedBill.invoiceNumber}</p>
-                    <span className={`px-2 py-1 rounded-full text-xs font-medium ${getStatusColor(selectedBill.status)}`}>
-                      {selectedBill.status.toUpperCase()}
+                    <p className="text-dark-text font-medium">{selectedBill.invoice_number}</p>
+                    <span className={`px-2 py-1 rounded-full text-xs font-medium ${getStatusColor()}`}>
+                      ACCEPTED
                     </span>
                   </div>
                 </div>
@@ -279,50 +216,14 @@ const BillsList = () => {
                     <span className="text-dark-text font-medium">{formatDate(selectedBill.date)}</span>
                   </div>
                   <div className="flex justify-between">
-                    <span className="text-dark-muted">Due Date:</span>
-                    <span className="text-dark-text font-medium">{formatDate(selectedBill.dueDate)}</span>
-                  </div>
-                  <div className="flex justify-between">
                     <span className="text-dark-muted">Category:</span>
-                    <span className="text-dark-text font-medium">{selectedBill.category}</span>
-                  </div>
-                  {selectedBill.confidence && (
-                    <div className="flex justify-between">
-                      <span className="text-dark-muted">Confidence:</span>
-                      <span className="text-dark-text font-medium">{selectedBill.confidence}%</span>
-                    </div>
-                  )}
-                </div>
-
-                <div className="pt-4 border-t border-dark-border">
-                  <p className="text-sm text-dark-muted mb-2">Description:</p>
-                  <p className="text-dark-text text-sm">{selectedBill.description}</p>
-                </div>
-
-                <div className="pt-4 border-t border-dark-border">
-                  <div className="space-y-2">
-                    <div className="flex justify-between text-sm">
-                      <span className="text-dark-muted">Uploaded:</span>
-                      <span className="text-dark-text">{formatDate(selectedBill.uploadedDate)}</span>
-                    </div>
-                    {selectedBill.processedDate && (
-                      <div className="flex justify-between text-sm">
-                        <span className="text-dark-muted">Processed:</span>
-                        <span className="text-dark-text">{formatDate(selectedBill.processedDate)}</span>
-                      </div>
-                    )}
+                    <span className="text-dark-text font-medium">{selectedBill.short_description}</span>
                   </div>
                 </div>
 
                 <div className="pt-4 border-t border-dark-border">
-                  <div className="flex space-x-2">
-                    <button className="btn-primary flex-1">
-                      Download PDF
-                    </button>
-                    <button className="btn-secondary">
-                      Share
-                    </button>
-                  </div>
+                  <p className="text-sm text-dark-muted mb-2">Item Description:</p>
+                  <p className="text-dark-text text-sm">{selectedBill.item}</p>
                 </div>
               </div>
             </div>

@@ -1,29 +1,38 @@
 import React, { useState } from 'react';
-import { Upload, FileImage, CheckCircle, XCircle, Clock, AlertTriangle } from 'lucide-react';
+import { Upload, FileImage, CheckCircle, XCircle, Clock, AlertTriangle, ShieldCheck, ShieldOff } from 'lucide-react';
 
 const Dashboard = () => {
   const [selectedFile, setSelectedFile] = useState(null);
   const [isProcessing, setIsProcessing] = useState(false);
   const [processingResult, setProcessingResult] = useState(null);
+  
+  // New state for the policy check feature
+  const [isCheckingPolicy, setIsCheckingPolicy] = useState(false);
+  const [policyResult, setPolicyResult] = useState(null);
 
   const handleFileSelect = (e) => {
     const file = e.target.files[0];
     if (file) {
       setSelectedFile(file);
+      // Reset everything on new file selection
       setProcessingResult(null);
+      setPolicyResult(null);
     }
   };
 
+  // Step 1: Just upload and get OCR data
   const handleUpload = async () => {
     if (!selectedFile) return;
     
     setIsProcessing(true);
+    setProcessingResult(null);
+    setPolicyResult(null);
     
     try {
       const formData = new FormData();
       formData.append('file', selectedFile);
       
-      const response = await fetch('http://localhost:5000/api/process-invoice', {
+      const response = await fetch('http://localhost:5001/api/process-invoice', {
         method: 'POST',
         body: formData,
       });
@@ -31,45 +40,69 @@ const Dashboard = () => {
       const result = await response.json();
       
       if (result.success) {
-        const ocrData = result.data;
-        const duplicateCheck = result.duplicate_check || { is_duplicate: false, exact_duplicates: [], similar_duplicates: [] };
-        
         setProcessingResult({
-          status: duplicateCheck.is_duplicate ? 'duplicate' : 'accepted',
-          amount: `$${parseFloat(ocrData.amount).toFixed(2)}`,
-          vendor: ocrData.vendor,
-          date: ocrData.date,
-          category: ocrData.short_description,
-          confidence: '95%', 
-          extractedData: {
-            invoiceNumber: ocrData.invoice_number,
-            item: ocrData.item,
-            amount: ocrData.amount,
-            date: ocrData.date,
-            vendor: ocrData.vendor,
-            shortDescription: ocrData.short_description
-          },
+          status: 'processed', // A neutral status before policy check
+          extractedData: result.data,
           rawOcrOutput: result.raw_output,
-          duplicateCheck: duplicateCheck,
-          savedToDatabase: result.saved_to_database || false,
-          billId: result.bill_id || null
         });
       } else {
-        setProcessingResult({
-          status: 'rejected',
-          error: result.error,
-          extractedData: null
-        });
+        setProcessingResult({ status: 'rejected', error: result.error || 'OCR failed' });
       }
     } catch (error) {
       console.error('Error processing invoice:', error);
-      setProcessingResult({
-        status: 'rejected',
-        error: 'Failed to process invoice. Please check if the OCR API is running on http://localhost:5000',
-        extractedData: null
-      });
+      setProcessingResult({ status: 'rejected', error: 'Failed to process. Check API.' });
     } finally {
       setIsProcessing(false);
+    }
+  };
+
+  // Step 2 & 3: Check policy and conditionally save
+  const handlePolicyCheck = async () => {
+    if (!processingResult?.extractedData) return;
+
+    setIsCheckingPolicy(true);
+    setPolicyResult(null);
+
+    try {
+      // Step 2: Call the policy check API
+      const policyResponse = await fetch('http://localhost:5001/api/policy-check', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(processingResult.extractedData),
+      });
+
+      const policyData = await policyResponse.json();
+      setPolicyResult(policyData.decision);
+
+      // Step 3: If policy passed, call the save API
+      if (policyData.success && policyData.decision.startsWith("PASS:")) {
+        const saveResponse = await fetch('http://localhost:5001/api/save-bill', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(processingResult.extractedData),
+        });
+
+        const saveData = await saveResponse.json();
+        if (saveData.success) {
+          // Update status and dispatch event for the other page to update
+          setProcessingResult(prev => ({ ...prev, status: 'accepted' }));
+          window.dispatchEvent(new CustomEvent('billUploaded'));
+        } else {
+          // Handle save failure (e.g., duplicate detected)
+          setProcessingResult(prev => ({ ...prev, status: 'rejected' }));
+          setPolicyResult(`Save Failed: ${saveData.error}`);
+        }
+      } else {
+        // Policy failed or was unclear
+        setProcessingResult(prev => ({ ...prev, status: 'rejected' }));
+      }
+
+    } catch (error) {
+      console.error("Error during policy check/save:", error);
+      setPolicyResult("An error occurred during the policy check.");
+      setProcessingResult(prev => ({ ...prev, status: 'rejected' }));
+    } finally {
+      setIsCheckingPolicy(false);
     }
   };
 
@@ -79,23 +112,23 @@ const Dashboard = () => {
         return <CheckCircle className="w-5 h-5 text-dark-success" />;
       case 'rejected':
         return <XCircle className="w-5 h-5 text-dark-error" />;
-      case 'duplicate':
-        return <AlertTriangle className="w-5 h-5 text-dark-warning" />;
-      default:
+      case 'processed':
         return <Clock className="w-5 h-5 text-dark-warning" />;
+      default:
+        return <Clock className="w-5 h-5 text-dark-muted" />;
     }
   };
 
   const getStatusColor = (status) => {
     switch (status) {
       case 'accepted':
-        return 'text-dark-success';
+        return 'text-dark-success bg-green-900 bg-opacity-20';
       case 'rejected':
-        return 'text-dark-error';
-      case 'duplicate':
-        return 'text-dark-warning';
+        return 'text-dark-error bg-red-900 bg-opacity-20';
+      case 'processed':
+        return 'text-dark-warning bg-yellow-900 bg-opacity-20';
       default:
-        return 'text-dark-warning';
+        return 'text-dark-muted bg-gray-900 bg-opacity-20';
     }
   };
 
@@ -160,12 +193,11 @@ const Dashboard = () => {
           <div className="flex items-center space-x-3 mb-6">
             {getStatusIcon(processingResult.status)}
             <h2 className="text-xl font-semibold text-dark-text">Processing Results</h2>
-            <span className={`px-3 py-1 rounded-full text-sm font-medium ${getStatusColor(processingResult.status)} bg-opacity-20`}>
+            <span className={`px-3 py-1 rounded-full text-sm font-medium ${getStatusColor(processingResult.status)}`}>
               {processingResult.status.toUpperCase()}
             </span>
           </div>
 
-          {/* OCR Extracted Data */}
           <div className="mb-6">
             <h3 className="text-lg font-semibold text-dark-text mb-2">Extracted OCR Data</h3>
             <pre className="p-4 bg-dark-surface rounded-lg text-sm text-dark-muted overflow-x-auto">
@@ -173,22 +205,41 @@ const Dashboard = () => {
             </pre>
           </div>
 
-          {/* Duplicate / Non-duplicate Message */}
-          {processingResult.duplicateCheck?.is_duplicate ? (
-            <div className="mb-6 p-4 bg-yellow-900 bg-opacity-20 border border-yellow-500 rounded-lg">
-              <div className="flex items-center space-x-2 mb-2">
-                <AlertTriangle className="w-5 h-5 text-dark-warning" />
-                <h3 className="text-lg font-semibold text-dark-warning">Duplicate Bill Detected</h3>
-              </div>
-              <p className="text-dark-text">This bill already exists in the database.</p>
-            </div>
-          ) : (
-            <div className="mb-6 p-4 bg-green-900 bg-opacity-20 border border-green-500 rounded-lg">
-              <div className="flex items-center space-x-2 mb-2">
-                <CheckCircle className="w-5 h-5 text-dark-success" />
-                <h3 className="text-lg font-semibold text-dark-success">Unique Bill</h3>
-              </div>
-              <p className="text-dark-text">This bill was stored successfully and is not a duplicate.</p>
+          {/* NEW Policy Check Button and Results */}
+          {processingResult.status === 'processed' && !policyResult && (
+             <div className="mt-6">
+                <button
+                  onClick={handlePolicyCheck}
+                  disabled={isCheckingPolicy}
+                  className="btn-primary w-full flex items-center justify-center space-x-2"
+                >
+                  {isCheckingPolicy ? (
+                    <>
+                      <Clock className="w-4 h-4 animate-spin" />
+                      <span>Checking...</span>
+                    </>
+                  ) : (
+                    <>
+                      <ShieldCheck className="w-4 h-4" />
+                      <span>Compare with Policies (Advanced Policy Check Agent)</span>
+                    </>
+                  )}
+                </button>
+             </div>
+          )}
+
+          {policyResult && (
+            <div className="mt-6 p-4 border rounded-lg bg-dark-surface">
+              <h3 className="text-lg font-semibold text-dark-text mb-2 flex items-center">
+                {policyResult.startsWith("PASS:") ? 
+                  <ShieldCheck className="w-5 h-5 mr-2 text-dark-success"/> : 
+                  <ShieldOff className="w-5 h-5 mr-2 text-dark-error"/>
+                }
+                Policy Agent Decision
+              </h3>
+              <p className={`text-sm ${policyResult.startsWith("PASS:") ? 'text-dark-success' : 'text-dark-error'}`}>
+                {policyResult}
+              </p>
             </div>
           )}
         </div>
