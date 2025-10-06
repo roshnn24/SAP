@@ -5,7 +5,8 @@
     "invoice_number": "5552",
     "item": "RPI PI Camera Module V2",
     "short_description": "Electronics",
-    "vendor": "SILVERLINE ELECTRONICS"
+    "vendor": "SILVERLINE ELECTRONICS",
+    "is_splitPO": "false"
   },
   {
     "amount": "1897.27",
@@ -13,7 +14,8 @@
     "invoice_number": "INV-1288",
     "item": "Cloud Server Hosting",
     "short_description": "Software",
-    "vendor": "Tech Solutions Inc"
+    "vendor": "Tech Solutions Inc",
+    "is_splitPO": "false"
   },
   {
     "amount": "75.50",
@@ -21,6 +23,7 @@
     "invoice_number": "CS-2025-08-15",
     "item": "Office Stationery",
     "short_description": "Office Supplies",
-    "vendor": "Creative Supplies Co."
+    "vendor": "Creative Supplies Co.",
+    "is_splitPO": "false"
   }
 ]
